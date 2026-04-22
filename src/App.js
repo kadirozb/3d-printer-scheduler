@@ -116,19 +116,25 @@ export default function App() {
     const dur = parseFloat(form.duration);
     if (isNaN(dur) || dur <= 0 || dur > 24) { setError('Süre 0.5 ile 24 saat arasında olmalı.'); return; }
 
-    // Conflict check (startTime → start_time normalization)
-    const normalizedApps = appointments.map(a => ({ ...a, startTime: a.start_time }));
-    const excludeId = modal.mode === 'edit' ? modal.app.id : null;
-    const conflict = findConflict(normalizedApps, { ...form, duration: dur }, excludeId);
-
-    if (conflict) {
-      const conflictEnd = minutesToTime(timeToMinutes(conflict.start_time) + Math.round(conflict.duration * 60));
-      setError(`⚠️ Çakışma!\n"${conflict.team}" takımı ${conflict.start_time}–${conflictEnd} saatleri arasında yazıcıyı kullanıyor.`);
-      return;
-    }
-
     setSaving(true);
     try {
+      // Çakışma kontrolü için Supabase'den güncel veriyi çek
+      const { data: freshData, error: fetchError } = await supabase
+        .from('appointments')
+        .select('*');
+      if (fetchError) throw fetchError;
+
+      const excludeId = modal.mode === 'edit' ? modal.app.id : null;
+      const normalizedApps = (freshData || []).map(a => ({ ...a, startTime: a.start_time }));
+      const conflict = findConflict(normalizedApps, { ...form, duration: dur }, excludeId);
+
+      if (conflict) {
+        const conflictEnd = minutesToTime(timeToMinutes(conflict.start_time) + Math.round(conflict.duration * 60));
+        setError(`⚠️ Çakışma!\n"${conflict.team}" takımı ${conflict.start_time}–${conflictEnd} saatleri arasında yazıcıyı kullanıyor.`);
+        setSaving(false);
+        return;
+      }
+
       if (modal.mode === 'add') {
         const { error } = await supabase.from('appointments').insert({
           team: form.team.trim(),
@@ -149,6 +155,8 @@ export default function App() {
         showToast('✏️ Randevu güncellendi.');
       }
       setModal(null);
+      // Kayıt sonrası listeyi hemen güncelle
+      await loadAppointments();
     } catch (e) {
       setError('Kayıt hatası: ' + e.message);
     } finally {
@@ -163,6 +171,7 @@ export default function App() {
       if (error) throw error;
       setModal(null);
       showToast('🗑️ Randevu silindi.', 'warning');
+      await loadAppointments();
     } catch (e) {
       setError('Silme hatası: ' + e.message);
     } finally {
