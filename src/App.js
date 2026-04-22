@@ -40,7 +40,7 @@ function findConflict(appointments, newApp, excludeId = null) {
   return null;
 }
 
-const HOURS = Array.from({ length: 24 }, (_, i) => i);
+const HOURS = Array.from({ length: 13 }, (_, i) => i + 8);
 
 const todayStr = (() => {
   const now = new Date();
@@ -54,7 +54,7 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const [modal, setModal] = useState(null);
   // modal types: 'add' | 'edit' | 'admin-login' | 'team-password'
-  const [form, setForm] = useState({ team: '', date: todayStr, startTime: '09:00', duration: '1', password: '' });
+  const [form, setForm] = useState({ team: '', date: todayStr, startTime: '08:00', duration: '1', password: '' });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -160,6 +160,12 @@ export default function App() {
     if (!form.date) { setError('Tarih seçiniz.'); return; }
     const dur = parseFloat(form.duration);
     if (isNaN(dur) || dur <= 0 || dur > 24) { setError('Süre 0.5 ile 24 saat arasında olmalı.'); return; }
+    const startMin = timeToMinutes(form.startTime);
+    const endMin = startMin + Math.round(dur * 60);
+    if (startMin < timeToMinutes('08:00') || endMin > timeToMinutes('20:00')) {
+      setError('⚠️ Randevular yalnızca 08:00–20:00 saatleri arasında olabilir.');
+      return;
+    }
     if (modal === 'add' && !form.password.trim()) { setError('Randevu şifresi boş olamaz.'); return; }
 
     setSaving(true);
@@ -335,8 +341,11 @@ export default function App() {
             </div>
           </div>
           {/* Attribution */}
-          <div style={{ marginTop:8, fontSize:10, color:'#3A4A6A', letterSpacing:2, textAlign:'right' }}>
-            DR. ÖĞR. ÜYESİ KADİR ÖZBEK
+          <div style={{ marginTop:8, display:'flex', alignItems:'center', justifyContent:'flex-end', gap:8 }}>
+            <div style={{ width:1, height:12, background:'#2A3A5A' }}/>
+            <span style={{ fontSize:11, color:'#4A6A8A', letterSpacing:1.5, fontStyle:'italic' }}>
+              Dr. Öğr. Üyesi Kadir Özbek
+            </span>
           </div>
         </div>
       </div>
@@ -534,6 +543,79 @@ export default function App() {
         )}
       </div>
 
+      {/* KULLANIM KILAVUZU */}
+      <div style={{ background:'#0F0F1A', borderTop:'1px solid #1E1E32', padding:'28px 24px', marginTop:20 }}>
+        <div style={{ maxWidth:1140, margin:'0 auto' }}>
+          <div style={{ fontSize:10, color:'#3A3A5A', letterSpacing:3, marginBottom:20, display:'flex', alignItems:'center', gap:10 }}>
+            <div style={{ flex:1, height:1, background:'#1E1E32' }}/>
+            NASIL KULLANILIR?
+            <div style={{ flex:1, height:1, background:'#1E1E32' }}/>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:16 }}>
+            {[
+              {
+                icon:'📅',
+                title:'Randevu Ekle',
+                steps:[
+                  '+ RANDEVU EKLE butonuna tıkla',
+                  'Takım adı, tarih, saat ve süreyi gir',
+                  'Kendine bir şifre belirle (unutma!)',
+                  'Kaydet — çakışma varsa sistem uyarır',
+                ]
+              },
+              {
+                icon:'✏️',
+                title:'Randevu Düzenle / Sil',
+                steps:[
+                  'Takvimde randevuna tıkla',
+                  'Randevunu oluştururken belirlediğin şifreyi gir',
+                  'Değişiklik yap ve kaydet',
+                  'Ya da sil butonuna bas',
+                ]
+              },
+              {
+                icon:'👁️',
+                title:'Takvimi İzle',
+                steps:[
+                  'Sol takvimde dolu günler nokta ile işaretlenir',
+                  'Bir güne tıkla → sağda saatlik plan görünür',
+                  'Liste görünümü için 📋 LİSTE butonunu kullan',
+                  'Veriler herkese anlık olarak güncellenir',
+                ]
+              },
+              {
+                icon:'🔑',
+                title:'Şifremi Unuttum',
+                steps:[
+                  'Sistem adminine (Dr. Kadir Özbek) haber ver',
+                  'Admin randevuyu silip yeniden oluşturmanı sağlar',
+                  'Admin girişi için sağ üstteki 🔑 Admin butonunu kullan',
+                  'Admin tüm randevulara erişebilir',
+                ]
+              },
+            ].map(card => (
+              <div key={card.title} style={{
+                background:'#141422', border:'1px solid #1E1E32',
+                borderRadius:12, padding:16
+              }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
+                  <span style={{ fontSize:16 }}>{card.icon}</span>
+                  <span style={{ fontSize:11, fontWeight:'bold', color:'#00D2D3', letterSpacing:1 }}>{card.title}</span>
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+                  {card.steps.map((s,i) => (
+                    <div key={i} style={{ display:'flex', gap:9, alignItems:'flex-start' }}>
+                      <div style={{ width:16, height:16, borderRadius:'50%', background:'rgba(0,210,211,0.08)', border:'1px solid #2A2A4A', display:'flex', alignItems:'center', justifyContent:'center', fontSize:8, color:'#00D2D3', flexShrink:0, marginTop:1 }}>{i+1}</div>
+                      <span style={{ fontSize:11, color:'#6A6A8A', lineHeight:1.5 }}>{s}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* ADMIN LOGIN MODAL */}
       {modal==='admin-login' && (
         <div style={overlayStyle} onClick={e => { if(e.target===e.currentTarget) setModal(null); }}>
@@ -596,7 +678,7 @@ export default function App() {
             <input type="date" value={form.date} onChange={e=>{setForm(f=>({...f,date:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
 
             <label style={labelStyle}>Başlangıç Saati</label>
-            <input type="time" value={form.startTime} onChange={e=>{setForm(f=>({...f,startTime:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
+            <input type="time" value={form.startTime} min="08:00" max="20:00" onChange={e=>{setForm(f=>({...f,startTime:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
 
             <label style={labelStyle}>Tahmini Baskı Süresi (Saat)</label>
             <input type="number" min="0.5" max="24" step="0.5" value={form.duration}
