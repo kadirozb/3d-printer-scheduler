@@ -25,17 +25,54 @@ function minutesToTime(m) {
   return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
 }
 
+// Bir randevunun kapladığı tüm tarihleri döndür
+function getOccupiedDates(a) {
+  const startMin = timeToMinutes(a.start_time);
+  const endMin = startMin + Math.round(parseFloat(a.duration) * 60);
+  const dates = [];
+  const base = new Date(a.date + 'T00:00:00');
+  const dayCount = Math.ceil(endMin / (24 * 60));
+  for (let i = 0; i < dayCount; i++) {
+    const d = new Date(base);
+    d.setDate(d.getDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+// Bir randevunun belirli bir günde kaç dakika işgal ettiğini hesapla (0 ise o gün yok)
+function getMinutesOnDate(a, dateStr) {
+  const baseDate = a.date;
+  const startMin = timeToMinutes(a.start_time);
+  const endMin = startMin + Math.round(parseFloat(a.duration) * 60);
+  const diffDays = Math.round((new Date(dateStr) - new Date(baseDate)) / 86400000);
+  const dayStartMin = diffDays * 24 * 60;
+  const dayEndMin = dayStartMin + 24 * 60;
+  // Bu günün başlangıç/bitiş dakikaları (randevunun başından itibaren)
+  const overlapStart = Math.max(startMin, dayStartMin);
+  const overlapEnd = Math.min(endMin, dayEndMin);
+  return overlapEnd > overlapStart ? { from: overlapStart - dayStartMin, to: overlapEnd - dayStartMin } : null;
+}
+
 function findConflict(appointments, newApp, excludeId = null) {
   const newStart = timeToMinutes(newApp.startTime);
   const dur = parseFloat(newApp.duration);
   if (isNaN(dur) || dur <= 0) return null;
   const newEnd = newStart + Math.round(dur * 60);
+  // newApp'in kapladığı her gün için kontrol et
+  const newBase = new Date(newApp.date + 'T00:00:00');
   for (const a of appointments) {
     if (a.id === excludeId) continue;
-    if (a.date !== newApp.date) continue;
     const aStart = timeToMinutes(a.start_time);
-    const aEnd = aStart + Math.round(parseFloat(a.duration) * 60);
-    if (newStart < aEnd && newEnd > aStart) return a;
+    const aDur = Math.round(parseFloat(a.duration) * 60);
+    const aEnd = aStart + aDur;
+    // Her iki randevuyu da mutlak dakikaya çevir (tarih farkını ekle)
+    const newBaseMs = new Date(newApp.date + 'T00:00:00').getTime();
+    const aBaseMs = new Date(a.date + 'T00:00:00').getTime();
+    const diffMins = (aBaseMs - newBaseMs) / 60000;
+    const aAbsStart = diffMins + aStart;
+    const aAbsEnd = diffMins + aEnd;
+    if (newStart < aAbsEnd && newEnd > aAbsStart) return a;
   }
   return null;
 }
@@ -241,9 +278,10 @@ export default function App() {
     return days;
   }, [calendarMonth]);
 
-  const appsForDay = (dateStr) => appointments.filter(a => a.date === dateStr);
+  // O günde aktif olan TÜM randevuları getir (ertesi güne taşanlar dahil)
+  const appsForDay = (dateStr) => appointments.filter(a => getOccupiedDates(a).includes(dateStr));
   const dayApps = appointments
-    .filter(a => a.date === selectedDate)
+    .filter(a => getOccupiedDates(a).includes(selectedDate))
     .sort((a,b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
 
   if (loading) return (
@@ -450,19 +488,27 @@ export default function App() {
               </div>
               <div style={{ overflowY:'auto', flex:1, maxHeight:580 }}>
                 {HOURS.map(h => {
+                  // Bu saatte aktif olan randevuları bul (çok günlü baskılar dahil)
                   const hourApps = dayApps.filter(a => {
-                    const s = timeToMinutes(a.start_time);
-                    const e = s + Math.round(a.duration*60);
-                    return s < (h+1)*60 && e > h*60;
+                    const overlap = getMinutesOnDate(a, selectedDate);
+                    if (!overlap) return false;
+                    return overlap.from < (h+1)*60 && overlap.to > h*60;
                   });
                   return (
                     <div key={h} style={{ display:'flex', minHeight:46, borderBottom:'1px solid #13131F' }}>
-                      <div style={{ width:50, flexShrink:0, padding:'5px 10px 5px 0', textAlign:'right', fontSize:10, color:h>=8&&h<=20?'#3A3A6A':'#202030', borderRight:'1px solid #18182A', userSelect:'none' }}>
+                      <div style={{ width:50, flexShrink:0, padding:'5px 10px 5px 0', textAlign:'right', fontSize:10, color:h>=9&&h<=17?'#3A3A6A':'#202030', borderRight:'1px solid #18182A', userSelect:'none' }}>
                         {String(h).padStart(2,'0')}:00
                       </div>
                       <div style={{ flex:1, padding:'4px 8px', display:'flex', flexWrap:'wrap', gap:4, alignItems:'flex-start' }}>
                         {hourApps.map(a => {
-                          const endTime = minutesToTime(timeToMinutes(a.start_time)+Math.round(a.duration*60));
+                          const overlap = getMinutesOnDate(a, selectedDate);
+                          const isStartDay = a.date === selectedDate;
+                          const totalEndMin = timeToMinutes(a.start_time) + Math.round(a.duration*60);
+                          const endDate = new Date(new Date(a.date+'T00:00:00').getTime() + totalEndMin*60000);
+                          const endDateStr = endDate.toISOString().slice(0,10);
+                          const isEndDay = endDateStr === selectedDate;
+                          const displayStart = isStartDay ? a.start_time : '00:00';
+                          const displayEnd = isEndDay ? minutesToTime(overlap.to) : '→ ertesi gün';
                           const color = getTeamColor(a.team,teamsForColor);
                           return (
                             <div key={a.id} onClick={() => clickEdit(a)} style={{
@@ -473,8 +519,9 @@ export default function App() {
                               display:'flex', gap:8, alignItems:'center'
                             }}>
                               <span style={{ fontWeight:'bold' }}>{a.team}</span>
-                              <span style={{ opacity:0.65 }}>{a.start_time}–{endTime}</span>
+                              <span style={{ opacity:0.65 }}>{displayStart}–{displayEnd}</span>
                               <span style={{ opacity:0.4, fontSize:10 }}>{a.duration}s</span>
+                              {!isStartDay && <span style={{ fontSize:9, opacity:0.5, background:color+'22', padding:'1px 5px', borderRadius:3 }}>devam</span>}
                             </div>
                           );
                         })}
