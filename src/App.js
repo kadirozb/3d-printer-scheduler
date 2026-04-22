@@ -40,7 +40,7 @@ function findConflict(appointments, newApp, excludeId = null) {
   return null;
 }
 
-const HOURS = Array.from({ length: 13 }, (_, i) => i + 8);
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
 const todayStr = (() => {
   const now = new Date();
@@ -54,7 +54,7 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const [modal, setModal] = useState(null);
   // modal types: 'add' | 'edit' | 'admin-login' | 'team-password'
-  const [form, setForm] = useState({ team: '', date: todayStr, startTime: '08:00', duration: '1', password: '' });
+  const [form, setForm] = useState({ team: '', date: todayStr, startTime: '09:00', duration: '1', password: '' });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -161,9 +161,8 @@ export default function App() {
     const dur = parseFloat(form.duration);
     if (isNaN(dur) || dur <= 0 || dur > 24) { setError('Süre 0.5 ile 24 saat arasında olmalı.'); return; }
     const startMin = timeToMinutes(form.startTime);
-    const endMin = startMin + Math.round(dur * 60);
-    if (startMin < timeToMinutes('08:00') || endMin > timeToMinutes('20:00')) {
-      setError('⚠️ Randevular yalnızca 08:00–20:00 saatleri arasında olabilir.');
+    if (startMin < timeToMinutes('09:00') || startMin > timeToMinutes('17:00')) {
+      setError('⚠️ Baskıya başlangıç saati 09:00–17:00 arasında olmalıdır.\nBaskı süresi gece devam edebilir.');
       return;
     }
     if (modal === 'add' && !form.password.trim()) { setError('Randevu şifresi boş olamaz.'); return; }
@@ -677,8 +676,8 @@ export default function App() {
             <label style={labelStyle}>Tarih</label>
             <input type="date" value={form.date} onChange={e=>{setForm(f=>({...f,date:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
 
-            <label style={labelStyle}>Başlangıç Saati</label>
-            <input type="time" value={form.startTime} min="08:00" max="20:00" onChange={e=>{setForm(f=>({...f,startTime:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
+            <label style={labelStyle}>Başlangıç Saati <span style={{color:'#5A6A8A',fontWeight:'normal'}}>(09:00–17:00)</span></label>
+            <input type="time" value={form.startTime} min="09:00" max="17:00" onChange={e=>{setForm(f=>({...f,startTime:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
 
             <label style={labelStyle}>Tahmini Baskı Süresi (Saat)</label>
             <input type="number" min="0.5" max="24" step="0.5" value={form.duration}
