@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { supabase } from './supabaseClient';
 
+const ADMIN_PASSWORD = '145314';
+
 const COLORS = [
   '#FF6B6B','#4ECDC4','#45B7D1','#96CEB4','#FECA57',
   '#FF9FF3','#54A0FF','#5F27CD','#00D2D3','#FF9F43',
@@ -51,16 +53,23 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({ team: '', date: todayStr, startTime: '09:00', duration: '1' });
+  // modal types: 'add' | 'edit' | 'admin-login' | 'team-password'
+  const [form, setForm] = useState({ team: '', date: todayStr, startTime: '09:00', duration: '1', password: '' });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminInput, setAdminInput] = useState('');
+  const [adminError, setAdminError] = useState('');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [toast, setToast] = useState(null);
+  // For edit: ask team password first
+  const [pendingEdit, setPendingEdit] = useState(null);
+  const [teamPwInput, setTeamPwInput] = useState('');
+  const [teamPwError, setTeamPwError] = useState('');
 
-  // Load appointments from Supabase
   const loadAppointments = useCallback(async () => {
     try {
       const { data, error } = await supabase
@@ -78,15 +87,12 @@ export default function App() {
 
   useEffect(() => {
     loadAppointments();
-
-    // Realtime subscription — tüm kullanıcılar anlık güncelleme görür
     const channel = supabase
       .channel('appointments-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
         loadAppointments();
       })
       .subscribe();
-
     return () => supabase.removeChannel(channel);
   }, [loadAppointments]);
 
@@ -95,19 +101,58 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   }
 
-  // Normalize: Supabase'de start_time olarak saklanıyor
   const teamsForColor = useMemo(() => [...new Set(appointments.map(a => a.team))], [appointments]);
 
   function openAdd() {
-    setForm({ team: '', date: selectedDate, startTime: '09:00', duration: '1' });
+    setForm({ team: '', date: selectedDate, startTime: '09:00', duration: '1', password: '' });
     setError('');
-    setModal({ mode: 'add' });
+    setModal('add');
   }
 
-  function openEdit(app) {
-    setForm({ team: app.team, date: app.date, startTime: app.start_time, duration: String(app.duration) });
+  // When clicking edit on a card
+  function clickEdit(app) {
+    if (isAdmin) {
+      // Admin: directly open edit
+      setForm({ team: app.team, date: app.date, startTime: app.start_time, duration: String(app.duration), password: '' });
+      setError('');
+      setModal({ mode: 'edit', app });
+    } else {
+      // Ask for team password first
+      setPendingEdit(app);
+      setTeamPwInput('');
+      setTeamPwError('');
+      setModal('team-password');
+    }
+  }
+
+  function handleTeamPasswordSubmit() {
+    if (!teamPwInput.trim()) { setTeamPwError('Şifre boş olamaz.'); return; }
+    if (teamPwInput === ADMIN_PASSWORD) {
+      // Admin şifresi de kabul edilir
+      setForm({ team: pendingEdit.team, date: pendingEdit.date, startTime: pendingEdit.start_time, duration: String(pendingEdit.duration), password: '' });
+      setError('');
+      setModal({ mode: 'edit', app: pendingEdit });
+      return;
+    }
+    if (teamPwInput !== pendingEdit.team_password) {
+      setTeamPwError('❌ Şifre yanlış. Randevuyu oluştururken girdiğiniz şifreyi girin.');
+      return;
+    }
+    setForm({ team: pendingEdit.team, date: pendingEdit.date, startTime: pendingEdit.start_time, duration: String(pendingEdit.duration), password: pendingEdit.team_password });
     setError('');
-    setModal({ mode: 'edit', app });
+    setModal({ mode: 'edit', app: pendingEdit });
+  }
+
+  function handleAdminLogin() {
+    if (adminInput === ADMIN_PASSWORD) {
+      setIsAdmin(true);
+      setModal(null);
+      setAdminInput('');
+      setAdminError('');
+      showToast('🔑 Admin girişi başarılı!');
+    } else {
+      setAdminError('❌ Yanlış şifre.');
+    }
   }
 
   async function handleSave() {
@@ -115,16 +160,14 @@ export default function App() {
     if (!form.date) { setError('Tarih seçiniz.'); return; }
     const dur = parseFloat(form.duration);
     if (isNaN(dur) || dur <= 0 || dur > 24) { setError('Süre 0.5 ile 24 saat arasında olmalı.'); return; }
+    if (modal === 'add' && !form.password.trim()) { setError('Randevu şifresi boş olamaz.'); return; }
 
     setSaving(true);
     try {
-      // Çakışma kontrolü için Supabase'den güncel veriyi çek
-      const { data: freshData, error: fetchError } = await supabase
-        .from('appointments')
-        .select('*');
+      const { data: freshData, error: fetchError } = await supabase.from('appointments').select('*');
       if (fetchError) throw fetchError;
 
-      const excludeId = modal.mode === 'edit' ? modal.app.id : null;
+      const excludeId = modal !== 'add' ? modal.app.id : null;
       const normalizedApps = (freshData || []).map(a => ({ ...a, startTime: a.start_time }));
       const conflict = findConflict(normalizedApps, { ...form, duration: dur }, excludeId);
 
@@ -135,12 +178,13 @@ export default function App() {
         return;
       }
 
-      if (modal.mode === 'add') {
+      if (modal === 'add') {
         const { error } = await supabase.from('appointments').insert({
           team: form.team.trim(),
           date: form.date,
           start_time: form.startTime,
           duration: dur,
+          team_password: form.password.trim(),
         });
         if (error) throw error;
         showToast('✅ Randevu eklendi!');
@@ -155,7 +199,6 @@ export default function App() {
         showToast('✏️ Randevu güncellendi.');
       }
       setModal(null);
-      // Kayıt sonrası listeyi hemen güncelle
       await loadAppointments();
     } catch (e) {
       setError('Kayıt hatası: ' + e.message);
@@ -217,20 +260,18 @@ export default function App() {
         input:focus { border-color:#00D2D3 !important; box-shadow:0 0 0 2px rgba(0,210,211,0.1); }
         ::-webkit-scrollbar { width:4px; }
         ::-webkit-scrollbar-thumb { background:#2A2A4A; border-radius:4px; }
-        .app-card:hover { border-color:#2A2A5A !important; }
-        .timeline-item:hover { background:rgba(255,255,255,0.04) !important; }
       `}</style>
 
       {/* Toast */}
       {toast && (
         <div style={{
           position:'fixed', top:20, right:20, zIndex:9999,
-          background: toast.type==='warning' ? '#1A1008' : toast.type==='error' ? '#1A0808' : '#081818',
-          border:`1px solid ${toast.type==='warning' ? '#FF9F43' : toast.type==='error' ? '#FF6B6B' : '#00D2D3'}`,
+          background: toast.type==='warning'?'#1A1008':toast.type==='error'?'#1A0808':'#081818',
+          border:`1px solid ${toast.type==='warning'?'#FF9F43':toast.type==='error'?'#FF6B6B':'#00D2D3'}`,
           borderRadius:10, padding:'12px 20px', fontSize:12,
-          color: toast.type==='warning' ? '#FF9F43' : toast.type==='error' ? '#FF6B6B' : '#00D2D3',
+          color: toast.type==='warning'?'#FF9F43':toast.type==='error'?'#FF6B6B':'#00D2D3',
           boxShadow:'0 8px 32px rgba(0,0,0,0.7)',
-          animation:'fadeSlide 0.25s ease', letterSpacing:1, maxWidth:300
+          animation:'fadeSlide 0.25s ease', letterSpacing:1, maxWidth:320
         }}>{toast.msg}</div>
       )}
 
@@ -247,31 +288,55 @@ export default function App() {
 
       {/* Header */}
       <div style={{ background:'linear-gradient(135deg,#1A1A2E,#16213E,#0F3460)', borderBottom:'1px solid #2A2A4A', padding:'0 24px' }}>
-        <div style={{ maxWidth:1140, margin:'0 auto', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px 0', flexWrap:'wrap', gap:12 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:14 }}>
-            <div style={{ width:44, height:44, background:'linear-gradient(135deg,#00D2D3,#54A0FF)', borderRadius:10, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, boxShadow:'0 0 20px rgba(0,210,211,0.4)' }}>⬡</div>
-            <div>
-              <div style={{ fontSize:17, fontWeight:'bold', letterSpacing:3, color:'#00D2D3' }}>3D PRİNTER</div>
-              <div style={{ fontSize:10, color:'#5A5A7A', letterSpacing:3 }}>RANDEVU TAKİP SİSTEMİ</div>
+        <div style={{ maxWidth:1140, margin:'0 auto', padding:'14px 0' }}>
+          {/* Top row: logo + buttons */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+              <div style={{ width:44, height:44, background:'linear-gradient(135deg,#00D2D3,#54A0FF)', borderRadius:10, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, boxShadow:'0 0 20px rgba(0,210,211,0.4)' }}>⬡</div>
+              <div>
+                <div style={{ fontSize:17, fontWeight:'bold', letterSpacing:3, color:'#00D2D3' }}>3D PRİNTER</div>
+                <div style={{ fontSize:10, color:'#5A5A7A', letterSpacing:3 }}>RANDEVU TAKİP SİSTEMİ</div>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+              {['calendar','list'].map(v => (
+                <button key={v} onClick={() => setView(v)} style={{
+                  padding:'7px 16px', borderRadius:6, border:'1px solid',
+                  borderColor: view===v ? '#00D2D3' : '#2A2A4A',
+                  background: view===v ? 'rgba(0,210,211,0.1)' : 'transparent',
+                  color: view===v ? '#00D2D3' : '#5A5A7A',
+                  cursor:'pointer', fontSize:11, letterSpacing:1, fontFamily:'inherit'
+                }}>{v==='calendar' ? '📅 TAKVİM' : '📋 LİSTE'}</button>
+              ))}
+              <button onClick={openAdd} style={{
+                padding:'7px 18px', borderRadius:6, border:'none',
+                background:'linear-gradient(135deg,#00D2D3,#54A0FF)',
+                color:'#0D0D12', cursor:'pointer', fontSize:11,
+                fontWeight:'bold', letterSpacing:1, fontFamily:'inherit',
+                boxShadow:'0 0 14px rgba(0,210,211,0.35)'
+              }}>+ RANDEVU EKLE</button>
+              {isAdmin ? (
+                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <div style={{ fontSize:10, color:'#FECA57', letterSpacing:1, padding:'6px 12px', background:'rgba(254,202,87,0.1)', border:'1px solid rgba(254,202,87,0.3)', borderRadius:6 }}>
+                    🔑 ADMİN
+                  </div>
+                  <button onClick={() => { setIsAdmin(false); showToast('Admin çıkışı yapıldı.', 'warning'); }} style={{
+                    padding:'6px 12px', borderRadius:6, border:'1px solid #2A2A4A',
+                    background:'transparent', color:'#5A5A7A', cursor:'pointer', fontSize:10, fontFamily:'inherit'
+                  }}>Çıkış</button>
+                </div>
+              ) : (
+                <button onClick={() => { setAdminInput(''); setAdminError(''); setModal('admin-login'); }} style={{
+                  padding:'7px 14px', borderRadius:6, border:'1px solid #3A3A5A',
+                  background:'transparent', color:'#5A5A7A', cursor:'pointer', fontSize:10,
+                  fontFamily:'inherit', letterSpacing:1
+                }}>🔑 Admin</button>
+              )}
             </div>
           </div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            {['calendar','list'].map(v => (
-              <button key={v} onClick={() => setView(v)} style={{
-                padding:'7px 16px', borderRadius:6, border:'1px solid',
-                borderColor: view===v ? '#00D2D3' : '#2A2A4A',
-                background: view===v ? 'rgba(0,210,211,0.1)' : 'transparent',
-                color: view===v ? '#00D2D3' : '#5A5A7A',
-                cursor:'pointer', fontSize:11, letterSpacing:1, fontFamily:'inherit'
-              }}>{v==='calendar' ? '📅 TAKVİM' : '📋 LİSTE'}</button>
-            ))}
-            <button onClick={openAdd} style={{
-              padding:'7px 18px', borderRadius:6, border:'none',
-              background:'linear-gradient(135deg,#00D2D3,#54A0FF)',
-              color:'#0D0D12', cursor:'pointer', fontSize:11,
-              fontWeight:'bold', letterSpacing:1, fontFamily:'inherit',
-              boxShadow:'0 0 14px rgba(0,210,211,0.35)'
-            }}>+ RANDEVU EKLE</button>
+          {/* Attribution */}
+          <div style={{ marginTop:8, fontSize:10, color:'#3A4A6A', letterSpacing:2, textAlign:'right' }}>
+            DR. ÖĞR. ÜYESİ KADİR ÖZBEK
           </div>
         </div>
       </div>
@@ -281,9 +346,7 @@ export default function App() {
         {/* CALENDAR VIEW */}
         {view==='calendar' && (
           <div style={{ display:'grid', gridTemplateColumns:'290px 1fr', gap:20 }}>
-            {/* Left panel */}
             <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-
               {/* Mini calendar */}
               <div style={{ background:'#1A1A2E', border:'1px solid #2A2A4A', borderRadius:14, padding:16 }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
@@ -385,7 +448,7 @@ export default function App() {
                     return s < (h+1)*60 && e > h*60;
                   });
                   return (
-                    <div key={h} className="timeline-item" style={{ display:'flex', minHeight:46, borderBottom:'1px solid #13131F', transition:'background 0.1s' }}>
+                    <div key={h} style={{ display:'flex', minHeight:46, borderBottom:'1px solid #13131F' }}>
                       <div style={{ width:50, flexShrink:0, padding:'5px 10px 5px 0', textAlign:'right', fontSize:10, color:h>=8&&h<=20?'#3A3A6A':'#202030', borderRight:'1px solid #18182A', userSelect:'none' }}>
                         {String(h).padStart(2,'0')}:00
                       </div>
@@ -394,7 +457,7 @@ export default function App() {
                           const endTime = minutesToTime(timeToMinutes(a.start_time)+Math.round(a.duration*60));
                           const color = getTeamColor(a.team,teamsForColor);
                           return (
-                            <div key={a.id} onClick={() => openEdit(a)} style={{
+                            <div key={a.id} onClick={() => clickEdit(a)} style={{
                               background:color+'16', border:`1px solid ${color}40`,
                               borderLeft:`3px solid ${color}`,
                               borderRadius:6, padding:'4px 10px',
@@ -438,12 +501,12 @@ export default function App() {
                     const color = getTeamColor(a.team,teamsForColor);
                     const isPast = a.date < todayStr;
                     return (
-                      <div key={a.id} className="app-card" style={{
+                      <div key={a.id} style={{
                         background:'#1A1A2E', border:'1px solid #2A2A4A',
                         borderLeft:`4px solid ${isPast?color+'44':color}`,
                         borderRadius:10, padding:'13px 18px',
                         display:'flex', alignItems:'center', gap:16,
-                        opacity:isPast?0.55:1, transition:'border-color 0.2s'
+                        opacity:isPast?0.55:1
                       }}>
                         <div style={{ width:9, height:9, borderRadius:2, background:isPast?color+'55':color, flexShrink:0 }}/>
                         <div style={{ flex:1, minWidth:0 }}>
@@ -457,7 +520,7 @@ export default function App() {
                           <div style={{ fontSize:10, color:'#4A4A6A', marginTop:2 }}>{a.duration} SAAT</div>
                         </div>
                         {isPast && <div style={{ fontSize:9, color:'#2A2A4A', letterSpacing:1 }}>GEÇMİŞ</div>}
-                        <button onClick={() => openEdit(a)} style={{
+                        <button onClick={() => clickEdit(a)} style={{
                           padding:'5px 13px', borderRadius:6, border:'1px solid #2A2A4A',
                           background:'transparent', color:'#00D2D3', cursor:'pointer',
                           fontSize:10, fontFamily:'inherit', letterSpacing:1, flexShrink:0
@@ -471,24 +534,58 @@ export default function App() {
         )}
       </div>
 
-      {/* Modal */}
-      {modal && (
-        <div style={{
-          position:'fixed', inset:0, background:'rgba(0,0,0,0.78)',
-          display:'flex', alignItems:'center', justifyContent:'center', zIndex:200,
-          backdropFilter:'blur(6px)'
-        }} onClick={e => { if(e.target===e.currentTarget && !saving) setModal(null); }}>
-          <div style={{
-            background:'#111120', border:'1px solid #252540',
-            borderRadius:18, padding:28, width:410, maxWidth:'92vw',
-            boxShadow:'0 24px 80px rgba(0,0,0,0.9)',
-            animation:'fadeSlide 0.2s ease'
-          }}>
+      {/* ADMIN LOGIN MODAL */}
+      {modal==='admin-login' && (
+        <div style={overlayStyle} onClick={e => { if(e.target===e.currentTarget) setModal(null); }}>
+          <div style={modalBoxStyle}>
+            <div style={{ fontSize:13, fontWeight:'bold', color:'#FECA57', letterSpacing:2, marginBottom:6 }}>🔑 ADMİN GİRİŞİ</div>
+            <div style={{ fontSize:10, color:'#3A3A5A', marginBottom:20, letterSpacing:1 }}>Tüm randevulara erişmek için admin şifresini girin.</div>
+            <label style={labelStyle}>Admin Şifresi</label>
+            <input type="password" value={adminInput} onChange={e=>{setAdminInput(e.target.value);setAdminError('');}}
+              onKeyDown={e => e.key==='Enter' && handleAdminLogin()}
+              placeholder="••••••" style={inputStyle} autoFocus />
+            {adminError && <div style={errorStyle}>{adminError}</div>}
+            <div style={{ display:'flex', gap:8, marginTop:18 }}>
+              <button onClick={handleAdminLogin} style={primaryBtnStyle}>GİRİŞ YAP</button>
+              <button onClick={() => setModal(null)} style={cancelBtnStyle}>İPTAL</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TEAM PASSWORD MODAL */}
+      {modal==='team-password' && (
+        <div style={overlayStyle} onClick={e => { if(e.target===e.currentTarget) setModal(null); }}>
+          <div style={modalBoxStyle}>
+            <div style={{ fontSize:13, fontWeight:'bold', color:'#00D2D3', letterSpacing:2, marginBottom:6 }}>🔒 RANDEVU DOĞRULAMA</div>
+            <div style={{ fontSize:10, color:'#3A3A5A', marginBottom:6, letterSpacing:1 }}>
+              Bu randevuyu düzenlemek için oluştururken belirlediğiniz şifreyi girin.
+            </div>
+            <div style={{ fontSize:11, color:'#4ECDC4', marginBottom:20 }}>
+              Takım: <strong>{pendingEdit?.team}</strong>
+            </div>
+            <label style={labelStyle}>Randevu Şifresi</label>
+            <input type="password" value={teamPwInput} onChange={e=>{setTeamPwInput(e.target.value);setTeamPwError('');}}
+              onKeyDown={e => e.key==='Enter' && handleTeamPasswordSubmit()}
+              placeholder="••••••" style={inputStyle} autoFocus />
+            {teamPwError && <div style={errorStyle}>{teamPwError}</div>}
+            <div style={{ display:'flex', gap:8, marginTop:18 }}>
+              <button onClick={handleTeamPasswordSubmit} style={primaryBtnStyle}>DEVAM ET</button>
+              <button onClick={() => setModal(null)} style={cancelBtnStyle}>İPTAL</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADD / EDIT MODAL */}
+      {modal && modal !== 'admin-login' && modal !== 'team-password' && (
+        <div style={overlayStyle} onClick={e => { if(e.target===e.currentTarget && !saving) setModal(null); }}>
+          <div style={modalBoxStyle}>
             <div style={{ fontWeight:'bold', fontSize:12, letterSpacing:2, color:'#00D2D3', marginBottom:4 }}>
-              {modal.mode==='add' ? 'YENİ RANDEVU' : 'RANDEVU DÜZENLE'}
+              {modal==='add' ? 'YENİ RANDEVU' : 'RANDEVU DÜZENLE'}
             </div>
             <div style={{ fontSize:10, color:'#3A3A5A', marginBottom:20, letterSpacing:1 }}>
-              {modal.mode==='add' ? 'Çakışan saatlere randevu eklenemez.' : 'Değişikliklerinizi kaydedin veya randevuyu silin.'}
+              {modal==='add' ? 'Randevunuzu korumak için bir şifre belirleyin.' : 'Değişikliklerinizi kaydedin veya randevuyu silin.'}
             </div>
 
             <label style={labelStyle}>Takım Adı</label>
@@ -505,28 +602,30 @@ export default function App() {
             <input type="number" min="0.5" max="24" step="0.5" value={form.duration}
               onChange={e=>{setForm(f=>({...f,duration:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
 
+            {modal==='add' && (
+              <>
+                <label style={labelStyle}>Randevu Şifresi <span style={{ color:'#FF6B6B' }}>(unutmayın!)</span></label>
+                <input type="password" value={form.password} onChange={e=>{setForm(f=>({...f,password:e.target.value}));setError('');}}
+                  placeholder="Randevunuzu koruyacak şifre" style={inputStyle} disabled={saving} />
+              </>
+            )}
+
             {form.startTime && parseFloat(form.duration)>0 && !isNaN(parseFloat(form.duration)) && (
               <div style={{ fontSize:11, color:'#4ECDC4', marginTop:8, letterSpacing:1 }}>
                 📌 Bitiş saati: <strong>{minutesToTime(timeToMinutes(form.startTime)+Math.round(parseFloat(form.duration)*60))}</strong>
               </div>
             )}
 
-            {error && (
-              <div style={{
-                background:'rgba(255,80,80,0.07)', border:'1px solid rgba(255,80,80,0.2)',
-                borderRadius:8, padding:'10px 14px', fontSize:11, color:'#FF8080',
-                marginTop:12, whiteSpace:'pre-line', lineHeight:1.7
-              }}>{error}</div>
-            )}
+            {error && <div style={errorStyle}>{error}</div>}
 
             <div style={{ display:'flex', gap:8, marginTop:18 }}>
               <button onClick={handleSave} disabled={saving} style={{
-                flex:1, padding:'11px 0', borderRadius:8, border:'none',
-                background:saving ? '#1A2A2A' : 'linear-gradient(135deg,#00D2D3,#54A0FF)',
-                color:saving ? '#3A5A5A' : '#0D0D12', fontWeight:'bold', cursor:saving?'wait':'pointer',
-                fontSize:12, fontFamily:'inherit', letterSpacing:1
+                ...primaryBtnStyle,
+                background: saving ? '#1A2A2A' : 'linear-gradient(135deg,#00D2D3,#54A0FF)',
+                color: saving ? '#3A5A5A' : '#0D0D12',
+                cursor: saving ? 'wait' : 'pointer',
               }}>{saving ? 'KAYDEDİLİYOR...' : 'KAYDET'}</button>
-              {modal.mode==='edit' && (
+              {modal !== 'add' && (
                 <button onClick={() => handleDelete(modal.app.id)} disabled={saving} style={{
                   padding:'11px 15px', borderRadius:8,
                   border:'1px solid rgba(255,100,100,0.3)',
@@ -534,11 +633,7 @@ export default function App() {
                   color:'#FF7070', cursor:saving?'wait':'pointer', fontSize:12, fontFamily:'inherit'
                 }}>SİL</button>
               )}
-              <button onClick={() => !saving && setModal(null)} style={{
-                padding:'11px 15px', borderRadius:8,
-                border:'1px solid #252540', background:'transparent',
-                color:'#5A5A7A', cursor:'pointer', fontSize:12, fontFamily:'inherit'
-              }}>İPTAL</button>
+              <button onClick={() => !saving && setModal(null)} style={cancelBtnStyle}>İPTAL</button>
             </div>
           </div>
         </div>
@@ -561,4 +656,31 @@ const inputStyle = {
   border:'1px solid #2A2A4A', background:'#0A0A18',
   color:'#E8E8F0', fontSize:13, fontFamily:'inherit',
   boxSizing:'border-box', outline:'none', transition:'all 0.2s'
+};
+const overlayStyle = {
+  position:'fixed', inset:0, background:'rgba(0,0,0,0.78)',
+  display:'flex', alignItems:'center', justifyContent:'center', zIndex:200,
+  backdropFilter:'blur(6px)'
+};
+const modalBoxStyle = {
+  background:'#111120', border:'1px solid #252540',
+  borderRadius:18, padding:28, width:410, maxWidth:'92vw',
+  boxShadow:'0 24px 80px rgba(0,0,0,0.9)',
+  animation:'fadeSlide 0.2s ease'
+};
+const primaryBtnStyle = {
+  flex:1, padding:'11px 0', borderRadius:8, border:'none',
+  background:'linear-gradient(135deg,#00D2D3,#54A0FF)',
+  color:'#0D0D12', fontWeight:'bold', cursor:'pointer',
+  fontSize:12, fontFamily:'inherit', letterSpacing:1
+};
+const cancelBtnStyle = {
+  padding:'11px 15px', borderRadius:8,
+  border:'1px solid #252540', background:'transparent',
+  color:'#5A5A7A', cursor:'pointer', fontSize:12, fontFamily:'inherit'
+};
+const errorStyle = {
+  background:'rgba(255,80,80,0.07)', border:'1px solid rgba(255,80,80,0.2)',
+  borderRadius:8, padding:'10px 14px', fontSize:11, color:'#FF8080',
+  marginTop:12, whiteSpace:'pre-line', lineHeight:1.7
 };
