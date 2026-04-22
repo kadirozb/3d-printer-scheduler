@@ -25,53 +25,80 @@ function minutesToTime(m) {
   return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
 }
 
-// Bir randevunun kapladığı tüm tarihleri döndür
+// Bir randevunun kapladığı tüm tarihleri döndür (Timezone kayması düzeltildi)
 function getOccupiedDates(a) {
   const startMin = timeToMinutes(a.start_time);
   const endMin = startMin + Math.round(parseFloat(a.duration) * 60);
   const dates = [];
-  const base = new Date(a.date + 'T00:00:00');
+  
+  // Tarihi YYYY-MM-DD formatından güvenli bir şekilde alıp yerel saatle kuruyoruz
+  const [y, m, d] = a.date.split('-').map(Number);
+  const base = new Date(y, m - 1, d); 
+
   const dayCount = Math.ceil(endMin / (24 * 60));
-  for (let i = 0; i < dayCount; i++) {
-    const d = new Date(base);
-    d.setDate(d.getDate() + i);
-    dates.push(d.toISOString().slice(0, 10));
+  // 0 saat bile olsa en azından başladığı günü kapsasın
+  for (let i = 0; i < Math.max(1, dayCount); i++) {
+    const current = new Date(base);
+    current.setDate(current.getDate() + i);
+    
+    // toISOString yerine manuel formatlama yapıyoruz
+    const dateStr = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`;
+    dates.push(dateStr);
   }
   return dates;
 }
 
-// Bir randevunun belirli bir günde kaç dakika işgal ettiğini hesapla (0 ise o gün yok)
+// Bir randevunun belirli bir günde kaç dakika işgal ettiğini hesapla (Timezone kayması düzeltildi)
 function getMinutesOnDate(a, dateStr) {
-  const baseDate = a.date;
+  const [y1, m1, d1] = a.date.split('-').map(Number);
+  const [y2, m2, d2] = dateStr.split('-').map(Number);
+
+  const date1 = new Date(y1, m1 - 1, d1);
+  const date2 = new Date(y2, m2 - 1, d2);
+
+  // Gün farkını kesin olarak buluyoruz
+  const diffDays = Math.round((date2 - date1) / 86400000);
+
+  // Eğer kontrol edilen tarih, randevunun başladığı tarihten önceyse atla
+  if (diffDays < 0) return null;
+
   const startMin = timeToMinutes(a.start_time);
-  const endMin = startMin + Math.round(parseFloat(a.duration) * 60);
-  const diffDays = Math.round((new Date(dateStr) - new Date(baseDate)) / 86400000);
+  const totalDur = Math.round(parseFloat(a.duration) * 60);
+  const endMin = startMin + totalDur;
+
   const dayStartMin = diffDays * 24 * 60;
   const dayEndMin = dayStartMin + 24 * 60;
+
   // Bu günün başlangıç/bitiş dakikaları (randevunun başından itibaren)
   const overlapStart = Math.max(startMin, dayStartMin);
   const overlapEnd = Math.min(endMin, dayEndMin);
+  
   return overlapEnd > overlapStart ? { from: overlapStart - dayStartMin, to: overlapEnd - dayStartMin } : null;
 }
 
+// Çakışma kontrolünü de timezone kaymasından arındırıyoruz
 function findConflict(appointments, newApp, excludeId = null) {
   const newStart = timeToMinutes(newApp.startTime);
   const dur = parseFloat(newApp.duration);
   if (isNaN(dur) || dur <= 0) return null;
   const newEnd = newStart + Math.round(dur * 60);
-  // newApp'in kapladığı her gün için kontrol et
-  const newBase = new Date(newApp.date + 'T00:00:00');
+
+  const [ny, nm, nd] = newApp.date.split('-').map(Number);
+  const newBaseMs = new Date(ny, nm - 1, nd).getTime();
+
   for (const a of appointments) {
     if (a.id === excludeId) continue;
     const aStart = timeToMinutes(a.start_time);
     const aDur = Math.round(parseFloat(a.duration) * 60);
     const aEnd = aStart + aDur;
-    // Her iki randevuyu da mutlak dakikaya çevir (tarih farkını ekle)
-    const newBaseMs = new Date(newApp.date + 'T00:00:00').getTime();
-    const aBaseMs = new Date(a.date + 'T00:00:00').getTime();
+
+    const [ay, am, ad] = a.date.split('-').map(Number);
+    const aBaseMs = new Date(ay, am - 1, ad).getTime();
+
     const diffMins = (aBaseMs - newBaseMs) / 60000;
     const aAbsStart = diffMins + aStart;
     const aAbsEnd = diffMins + aEnd;
+    
     if (newStart < aAbsEnd && newEnd > aAbsStart) return a;
   }
   return null;
@@ -90,7 +117,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const [modal, setModal] = useState(null);
-  // modal types: 'add' | 'edit' | 'admin-login' | 'team-password'
   const [form, setForm] = useState({ team: '', date: todayStr, startTime: '09:00', duration: '1', password: '' });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -102,7 +128,6 @@ export default function App() {
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [toast, setToast] = useState(null);
-  // For edit: ask team password first
   const [pendingEdit, setPendingEdit] = useState(null);
   const [teamPwInput, setTeamPwInput] = useState('');
   const [teamPwError, setTeamPwError] = useState('');
@@ -146,15 +171,12 @@ export default function App() {
     setModal('add');
   }
 
-  // When clicking edit on a card
   function clickEdit(app) {
     if (isAdmin) {
-      // Admin: directly open edit
       setForm({ team: app.team, date: app.date, startTime: app.start_time, duration: String(app.duration), password: '' });
       setError('');
       setModal({ mode: 'edit', app });
     } else {
-      // Ask for team password first
       setPendingEdit(app);
       setTeamPwInput('');
       setTeamPwError('');
@@ -165,7 +187,6 @@ export default function App() {
   function handleTeamPasswordSubmit() {
     if (!teamPwInput.trim()) { setTeamPwError('Şifre boş olamaz.'); return; }
     if (teamPwInput === ADMIN_PASSWORD) {
-      // Admin şifresi de kabul edilir
       setForm({ team: pendingEdit.team, date: pendingEdit.date, startTime: pendingEdit.start_time, duration: String(pendingEdit.duration), password: '' });
       setError('');
       setModal({ mode: 'edit', app: pendingEdit });
@@ -278,7 +299,6 @@ export default function App() {
     return days;
   }, [calendarMonth]);
 
-  // O günde aktif olan TÜM randevuları getir (ertesi güne taşanlar dahil)
   const appsForDay = (dateStr) => appointments.filter(a => getOccupiedDates(a).includes(dateStr));
   const dayApps = appointments
     .filter(a => getOccupiedDates(a).includes(selectedDate))
@@ -332,7 +352,6 @@ export default function App() {
       {/* Header */}
       <div style={{ background:'linear-gradient(135deg,#1A1A2E,#16213E,#0F3460)', borderBottom:'1px solid #2A2A4A', padding:'0 24px' }}>
         <div style={{ maxWidth:1140, margin:'0 auto', padding:'14px 0' }}>
-          {/* Top row: logo + buttons */}
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
             <div style={{ display:'flex', alignItems:'center', gap:14 }}>
               <div style={{ width:44, height:44, background:'linear-gradient(135deg,#00D2D3,#54A0FF)', borderRadius:10, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, boxShadow:'0 0 20px rgba(0,210,211,0.4)' }}>⬡</div>
@@ -377,7 +396,6 @@ export default function App() {
               )}
             </div>
           </div>
-          {/* Attribution */}
           <div style={{ marginTop:8, display:'flex', alignItems:'center', justifyContent:'flex-end', gap:8 }}>
             <div style={{ width:1, height:12, background:'#2A3A5A' }}/>
             <span style={{ fontSize:11, color:'#4A6A8A', letterSpacing:1.5, fontStyle:'italic' }}>
@@ -488,7 +506,6 @@ export default function App() {
               </div>
               <div style={{ overflowY:'auto', flex:1, maxHeight:580 }}>
                 {HOURS.map(h => {
-                  // Bu saatte aktif olan randevuları bul (çok günlü baskılar dahil)
                   const hourApps = dayApps.filter(a => {
                     const overlap = getMinutesOnDate(a, selectedDate);
                     if (!overlap) return false;
@@ -504,12 +521,18 @@ export default function App() {
                           const overlap = getMinutesOnDate(a, selectedDate);
                           const isStartDay = a.date === selectedDate;
                           const totalEndMin = timeToMinutes(a.start_time) + Math.round(a.duration*60);
-                          const endDate = new Date(new Date(a.date+'T00:00:00').getTime() + totalEndMin*60000);
-                          const endDateStr = endDate.toISOString().slice(0,10);
+                          
+                          // Timezone'dan arındırılmış bitiş tarihi hesaplaması
+                          const [ay, am, ad] = a.date.split('-').map(Number);
+                          const endDate = new Date(ay, am - 1, ad);
+                          endDate.setMinutes(endDate.getMinutes() + totalEndMin);
+                          const endDateStr = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`;
+                          
                           const isEndDay = endDateStr === selectedDate;
                           const displayStart = isStartDay ? a.start_time : '00:00';
                           const displayEnd = isEndDay ? minutesToTime(overlap.to) : '→ ertesi gün';
                           const color = getTeamColor(a.team,teamsForColor);
+                          
                           return (
                             <div key={a.id} onClick={() => clickEdit(a)} style={{
                               background:color+'16', border:`1px solid ${color}40`,
