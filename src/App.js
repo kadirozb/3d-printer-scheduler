@@ -196,7 +196,7 @@ export default function App() {
     if (!form.team.trim()) { setError('Takım adı boş olamaz.'); return; }
     if (!form.date) { setError('Tarih seçiniz.'); return; }
     const dur = parseFloat(form.duration);
-    if (isNaN(dur) || dur <= 0 || dur > 24) { setError('Süre 0.5 ile 24 saat arasında olmalı.'); return; }
+    if (isNaN(dur) || dur <= 0 || dur > 720) { setError('Süre 0.5 ile 720 saat (30 gün) arasında olmalı.'); return; }
     const startMin = timeToMinutes(form.startTime);
     if (startMin < timeToMinutes('09:00') || startMin > timeToMinutes('17:00')) {
       setError('⚠️ Baskıya başlangıç saati 09:00–17:00 arasında olmalıdır.\nBaskı süresi gece devam edebilir.');
@@ -727,7 +727,7 @@ export default function App() {
             <input type="time" value={form.startTime} min="09:00" max="17:00" onChange={e=>{setForm(f=>({...f,startTime:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
 
             <label style={labelStyle}>Tahmini Baskı Süresi (Saat)</label>
-            <input type="number" min="0.5" max="24" step="0.5" value={form.duration}
+            <input type="number" min="0.5" max="720" step="0.5" value={form.duration}
               onChange={e=>{setForm(f=>({...f,duration:e.target.value}));setError('');}} style={inputStyle} disabled={saving} />
 
             {modal==='add' && (
